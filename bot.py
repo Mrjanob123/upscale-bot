@@ -35,7 +35,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-
     if query.data == "setkey":
         context.user_data["waiting_key"] = True
         await query.message.reply_text(
@@ -115,7 +114,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if users[user.id].get("blocked"):
         await update.message.reply_text("🚫 Siz admin tomonidan bloklandingiz!")
         return
-
     if context.user_data.get("waiting_key"):
         api_key = update.message.text.strip()
         if api_key.startswith("sk-"):
@@ -125,29 +123,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Noto'g'ri key! sk- bilan boshlanishi kerak!")
         return
-
     if not update.message.photo:
         await update.message.reply_text("📸 Iltimos rasm yuboring yoki /start bosing!")
         return
-
     api_key = users[user.id].get("api_key")
     if not api_key:
         await update.message.reply_text("⚠️ Avval /start bosib API Key kiriting!")
         return
-
     mode = context.user_data.get("mode", "upscale")
     await update.message.reply_text("⏳ Qayta ishlanmoqda, kuting...")
-
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     img_bytes = await file.download_as_bytearray()
-
     if mode == "generate":
         response = requests.post(
-            "https://api.stability.ai/v2beta/stable-image/generate/sd3",
+            "https://api.stability.ai/v2beta/stable-image/generate/core",
             headers={"authorization": f"Bearer {api_key}", "accept": "image/*"},
-            files={"image": ("image.png", bytes(img_bytes), "image/png")},
-            data={"prompt": "high quality, cinematic, professional, detailed", "output_format": "png", "strength": 0.7}
+            data={"prompt": "high quality cinematic professional detailed", "output_format": "png"},
+            files={"none": ""}
         )
     else:
         response = requests.post(
@@ -156,9 +149,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             files={"image": ("image.png", bytes(img_bytes), "image/png")},
             data={"output_format": "png"}
         )
-
     users[user.id]["count"] += 1
-
     if response.status_code == 200:
         caption = "✅ *AI Generate tayyor!*" if mode == "generate" else "✅ *Upscale tayyor!*"
         await update.message.reply_photo(photo=response.content, caption=caption, parse_mode="Markdown")
