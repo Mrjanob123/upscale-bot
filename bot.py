@@ -318,7 +318,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if mode == "generate":
 
         response = requests.post(
-            "https://api.stability.ai/v2beta/stable-image/generate/core",
+            "https://api.stability.ai/v2beta/stable-image/control/sketch",
 
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -334,9 +334,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
 
             data={
-                "prompt": "cinematic digital art",
-                "output_format": "png",
-                "aspect_ratio": ratio
+                "prompt": "high quality detailed image",
+                "control_strength": 0.7,
+                "output_format": "png"
+            }
+        )
+
+    # UPSCALE
+    else:
+
+        response = requests.post(
+            "https://api.stability.ai/v2beta/stable-image/upscale/fast",
+
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "image/*"
+            },
+
+            files={
+                "image": (
+                    "image.png",
+                    bytes(img_bytes),
+                    "image/png"
+                )
+            },
+
+            data={
+                "output_format": "png"
             }
         )
 
