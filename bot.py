@@ -191,20 +191,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     img_bytes = await file.download_as_bytearray()
 
     if mode == "generate":
-        response = requests.post(
-            "https://api.stability.ai/v2beta/stable-image/control/style",
-            headers={"authorization": f"Bearer {api_key}", "accept": "image/*"},
+        response = requests.post
+            "https://api.stability.ai/v2beta/stable-image/generate/core",
+        headers={"Authorization": f"Bearer {api_key}", "Accept": "image/*"},
             files={"image": ("image.png", bytes(img_bytes), "image/png")},
             data={
-                "output_format": "png",
-                "aspect_ratio": ratio,
-                "fidelity": 0.9
+                data={
+    "prompt": "cinematic digital art",
+    "output_format": "png",
+    "aspect_ratio": ratio
+            }
+                
+                
             }
         )
     else:
         response = requests.post(
             "https://api.stability.ai/v2beta/stable-image/upscale/fast",
-            headers={"authorization": f"Bearer {api_key}", "accept": "image/*"},
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "image/*"},
             files={"image": ("image.png", bytes(img_bytes), "image/png")},
             data={"output_format": "png"}
         )
@@ -219,11 +223,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = "✅ *AI Generate tayyor!* _(3 kredit)_" if mode == "generate" else "✅ *Upscale tayyor!* _(1 kredit)_"
         await update.message.reply_photo(photo=response.content, caption=caption, parse_mode="Markdown")
     else:
-        await update.message.reply_text(
-            f"❌ Xatolik! Sabab: `{response.status_code}`\n"
-            "API Key noto'g'ri yoki kredit tugagan!\n"
-            "/start → 📊 Statistika dan balansni tekshiring!",
-            parse_mode="Markdown"
+        else:
+    print(response.status_code)
+    print(response.text)
+
+    await update.message.reply_text(
+        f"{response.status_code}\n\n{response.text}"
+    )
         )
 
 app = Application.builder().token(BOT_TOKEN).build()
