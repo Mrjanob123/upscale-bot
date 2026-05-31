@@ -1,12 +1,32 @@
 import os
 import io
 import requests
+import base64
+from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+STABILITY_KEY = os.getenv("STABILITY_API_KEY")
+REPLICATE_KEY = os.getenv("REPLICATE_API_KEY")
 ADMIN_ID = 7860734994
+
 users = {}
+
+def compress_image(img_bytes, max_size=9*1024*1024):
+    img = Image.open(io.BytesIO(img_bytes))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    output = io.BytesIO()
+    quality = 90
+    img.save(output, format="JPEG", quality=quality)
+    while output.tell() > max_size and quality > 30:
+        output = io.BytesIO()
+        quality -= 10
+        img.save(output, format="JPEG", quality=quality)
+    output.seek(0)
+    output.name = "result.jpg"
+    return output
 
 async def delete_prev(context, chat_id):
     msg_id = context.user_data.get("last_bot_msg")
@@ -16,30 +36,51 @@ async def delete_prev(context, chat_id):
         except:
             pass
 
+def main_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📸 Upscale", callback_data="upscale"),
+         InlineKeyboardButton("🎨 AI Generate", callback_data="generate")],
+        [InlineKeyboardButton("📊 Statistika", callback_data="stats"),
+         InlineKeyboardButton("ℹ️ Bot haqida", callback_data="about")]
+    ])
+
+def back_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Menyuga qaytish", callback_data="back")]
+    ])
+
+def result_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📸 Upscale", callback_data="upscale"),
+         InlineKeyboardButton("🎨 AI Generate", callback_data="generate")],
+        [InlineKeyboardButton("🔙 Menyu", callback_data="back")]
+    ])
+
+MAIN_TEXT = (
+    "⚡️ *Stability AI Bot* ga xush kelibsiz!\n\n"
+    "━━━━━━━━━━━━━━━\n"
+    "📸 *Upscale* — Rasmni tiniq qilish\n"
+    "🎨 *AI Generate* — img2img Stable Diffusion\n"
+    "━━━━━━━━━━━━━━━\n\n"
+    "👇 Xizmatni tanlang:"
+)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in users:
-        users[user.id] = {"name": user.first_name, "count": 0, "blocked": False, "api_key": None, "upscale": 0, "generate": 0}
-    keyboard = [
-        [InlineKeyboardButton("📸 Upscale", callback_data="upscale"),
-         InlineKeyboardButton("🎨 AI Generate", callback_data="generate")],
-        [InlineKeyboardButton("🔑 API Key", callback_data="setkey"),
-         InlineKeyboardButton("📊 Statistika", callback_data="stats")],
-        [InlineKeyboardButton("ℹ️ Bot haqida", callback_data="about")]
-    ]
+        users[user.id] = {
+            "name": user.first_name,
+            "upscale": 0,
+            "generate": 0,
+            "count": 0,
+            "blocked": False
+        }
     await delete_prev(context, update.effective_chat.id)
     msg = await update.message.reply_text(
-        "⚡️ *Stability AI Bot* ga xush kelibsiz!\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "📸 *Upscale* — Rasmni tiniq qilish _(1 kredit)_\n"
-        "🎨 *AI Generate* — Stable Diffusion _(3 kredit)_\n"
-        "━━━━━━━━━━━━━━━\n\n"
-        "⚠️ Avval 🔑 *API Key* kiriting!\n"
-        "👇 Xizmatni tanlang:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        MAIN_TEXT, parse_mode="Markdown", reply_markup=main_keyboard()
     )
     context.user_data["last_bot_msg"] = msg.message_id
+    context.user_data["mode"] = None
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -48,127 +89,75 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
 
     if user_id not in users:
-        users[user_id] = {"name": query.from_user.first_name, "count": 0, "blocked": False, "api_key": None, "upscale": 0, "generate": 0}
+        users[user_id] = {
+            "name": query.from_user.first_name,
+            "upscale": 0, "generate": 0,
+            "count": 0, "blocked": False
+        }
 
-    async def edit_or_send(text, keyboard=None):
+    async def edit(text, kb=None):
         try:
             await query.message.edit_text(
-                text, parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+                text, parse_mode="Markdown", reply_markup=kb
             )
             context.user_data["last_bot_msg"] = query.message.message_id
         except:
-            msg = await context.bot.send_message(chat_id, text, parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+            msg = await context.bot.send_message(
+                chat_id, text, parse_mode="Markdown", reply_markup=kb
+            )
             context.user_data["last_bot_msg"] = msg.message_id
 
-    if query.data == "setkey":
-        context.user_data["waiting_key"] = True
+    if query.data == "back":
         context.user_data["mode"] = None
-        await edit_or_send(
-            "🔑 *API Key kiriting*\n\n"
-            "platform.stability.ai dan oling va yuboring:\n"
-            "Misol: `sk-xxxxxxxxxxxxxxxx`\n\n"
-            "_/start — menyuga qaytish_"
-        )
+        await edit(MAIN_TEXT, main_keyboard())
 
     elif query.data == "upscale":
-        if not users.get(user_id, {}).get("api_key"):
-            await edit_or_send("⚠️ Avval 🔑 *API Key* kiriting!\n\n_/start — menyuga qaytish_")
-            return
         context.user_data["mode"] = "upscale"
-        context.user_data["waiting_key"] = False
-        await edit_or_send(
-            "📸 *Upscale*\n\n"
-            "Rasmingizni yuboring — men uni yuqori sifatga ko'taraman!\n"
-            "💰 _1 kredit sarflanadi_\n\n"
-            "_/start — menyuga qaytish_"
+        await edit(
+            "📸 *Upscale*\n\nRasmingizni yuboring!\n_Yuqori sifatga ko'taraman_ ✨",
+            back_keyboard()
         )
 
     elif query.data == "generate":
-        if not users.get(user_id, {}).get("api_key"):
-            await edit_or_send("⚠️ Avval 🔑 *API Key* kiriting!\n\n_/start — menyuga qaytish_")
-            return
-        context.user_data["waiting_key"] = False
-        keyboard = [
+        context.user_data["mode"] = "generate_ratio"
+        kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⬜ 1:1 Kvadrat", callback_data="ratio_1:1")],
             [InlineKeyboardButton("📱 9:16 Vertikal", callback_data="ratio_9:16")],
             [InlineKeyboardButton("🖥️ 16:9 Gorizontal", callback_data="ratio_16:9")],
-            [InlineKeyboardButton("🔙 Orqaga", callback_data="back")]
-        ]
-        await edit_or_send(
-            "🎨 *AI Generate*\n\n"
-            "Rasm o'lchamini tanlang:\n"
-            "💰 _3 kredit sarflanadi_",
-            keyboard
-        )
+            [InlineKeyboardButton("🔙 Menyuga qaytish", callback_data="back")]
+        ])
+        await edit("🎨 *AI Generate*\n\nRasm o'lchamini tanlang:", kb)
 
     elif query.data.startswith("ratio_"):
         ratio = query.data.replace("ratio_", "")
         context.user_data["ratio"] = ratio
         context.user_data["mode"] = "generate"
-        await edit_or_send(
+        await edit(
             f"🎨 *AI Generate* | O'lcham: *{ratio}*\n\n"
-            "Rasmingizni yuboring — AI uni qayta yaratadi!\n\n"
-            "_/start — menyuga qaytish_"
+            "Rasmingizni yuboring — AI qayta yaratadi! 🎨",
+            back_keyboard()
         )
 
     elif query.data == "stats":
-        api_key = users.get(user_id, {}).get("api_key")
-        if not api_key:
-            await edit_or_send("⚠️ Avval 🔑 *API Key* kiriting!")
-            return
-        try:
-            r = requests.get(
-                "https://api.stability.ai/v1/user/balance",
-                headers={"Authorization": f"Bearer {api_key}"}
-            )
-            if r.status_code == 200:
-                credits = r.json().get("credits", 0)
-                u = users.get(user_id, {})
-                await edit_or_send(
-                    f"📊 *Statistika*\n\n"
-                    f"💰 Qolgan kredit: *{credits:.1f}*\n\n"
-                    f"📸 Upscale: *{u.get('upscale', 0)} ta* _(1 kredit/ta)_\n"
-                    f"🎨 Generate: *{u.get('generate', 0)} ta* _(3 kredit/ta)_\n"
-                    f"📦 Jami: *{u.get('count', 0)} ta*\n\n"
-                    f"_/start — menyuga qaytish_"
-                )
-            else:
-                await edit_or_send("❌ Kredit ma'lumotini olishda xatolik!")
-        except:
-            await edit_or_send("❌ Xatolik yuz berdi!")
-
-    elif query.data == "about":
-        await edit_or_send(
-            "ℹ️ *Bot haqida*\n\n"
-            "🤖 *Stability AI Bot*\n\n"
-            "⚡️ *Imkoniyatlar:*\n"
-            "• 📸 Upscale — 1 kredit\n"
-            "• 🎨 AI Generate — 3 kredit\n"
-            "• 📊 Kredit balansi\n\n"
-            "🛠 *Texnologiya:* Stability AI\n"
-            "━━━━━━━━━━━━━━━\n"
-            "👤 *Yaratuvchi:* @EHENCEADS\n\n"
-            "_/start — menyuga qaytish_"
+        u = users.get(user_id, {})
+        await edit(
+            f"📊 *Statistika*\n\n"
+            f"📸 Upscale: *{u.get('upscale', 0)} ta*\n"
+            f"🎨 Generate: *{u.get('generate', 0)} ta*\n"
+            f"📦 Jami: *{u.get('count', 0)} ta*",
+            back_keyboard()
         )
 
-    elif query.data == "back":
-        keyboard = [
-            [InlineKeyboardButton("📸 Upscale", callback_data="upscale"),
-             InlineKeyboardButton("🎨 AI Generate", callback_data="generate")],
-            [InlineKeyboardButton("🔑 API Key", callback_data="setkey"),
-             InlineKeyboardButton("📊 Statistika", callback_data="stats")],
-            [InlineKeyboardButton("ℹ️ Bot haqida", callback_data="about")]
-        ]
-        await edit_or_send(
-            "⚡️ *Stability AI Bot*\n\n"
+    elif query.data == "about":
+        await edit(
+            "ℹ️ *Bot haqida*\n\n"
+            "🤖 *Stability AI Bot*\n\n"
+            "• 📸 Upscale — rasmni tiniqlashtirish\n"
+            "• 🎨 AI Generate — img2img\n\n"
+            "🛠 *Texnologiya:* Replicate + Stability AI\n"
             "━━━━━━━━━━━━━━━\n"
-            "📸 *Upscale* — 1 kredit\n"
-            "🎨 *AI Generate* — 3 kredit\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "👇 Xizmatni tanlang:",
-            keyboard
+            "👤 *Yaratuvchi:* @EHENCEADS",
+            back_keyboard()
         )
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,8 +167,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "👥 *Foydalanuvchilar:*\n\n"
     for uid, data in users.items():
         status = "🚫" if data.get("blocked") else "✅"
-        key = "✅" if data.get("api_key") else "❌"
-        text += f"{status} *{data['name']}* | `{uid}` | 📸{data.get('upscale',0)} 🎨{data.get('generate',0)} | Key:{key}\n"
+        text += f"{status} *{data['name']}* | `{uid}` | 📸{data.get('upscale',0)} 🎨{data.get('generate',0)}\n"
     if not users:
         text = "Hali foydalanuvchi yo'q"
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -194,6 +182,8 @@ async def block_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid in users:
         users[uid]["blocked"] = True
         await update.message.reply_text(f"🚫 {users[uid]['name']} bloklandi!")
+    else:
+        await update.message.reply_text("Foydalanuvchi topilmadi!")
 
 async def unblock_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -205,137 +195,168 @@ async def unblock_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid in users:
         users[uid]["blocked"] = False
         await update.message.reply_text(f"✅ {users[uid]['name']} blokdan chiqarildi!")
+    else:
+        await update.message.reply_text("Foydalanuvchi topilmadi!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
 
     if user.id not in users:
-        users[user.id] = {"name": user.first_name, "count": 0, "blocked": False, "api_key": None, "upscale": 0, "generate": 0}
+        users[user.id] = {
+            "name": user.first_name,
+            "upscale": 0, "generate": 0,
+            "count": 0, "blocked": False
+        }
 
     if users[user.id].get("blocked"):
         await update.message.reply_text("🚫 Siz admin tomonidan bloklandingiz!")
         return
 
-    # API key kutilayotgan bo'lsa
-    if context.user_data.get("waiting_key") and update.message.text:
-        api_key = update.message.text.strip()
-        try:
-            await update.message.delete()
-        except:
-            pass
-        await delete_prev(context, chat_id)
-        if api_key.startswith("sk-"):
-            users[user.id]["api_key"] = api_key
-            context.user_data["waiting_key"] = False
-            keyboard = [
-                [InlineKeyboardButton("📸 Upscale", callback_data="upscale"),
-                 InlineKeyboardButton("🎨 AI Generate", callback_data="generate")],
-                [InlineKeyboardButton("📊 Statistika", callback_data="stats")]
-            ]
-            msg = await context.bot.send_message(
-                chat_id,
-                "✅ *API Key saqlandi!*\n\nXizmatni tanlang:",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            context.user_data["last_bot_msg"] = msg.message_id
-        else:
-            msg = await context.bot.send_message(
-                chat_id,
-                "❌ *Noto'g'ri!* `sk-` bilan boshlanishi kerak!\n\nQayta yuboring:",
-                parse_mode="Markdown"
-            )
-            context.user_data["last_bot_msg"] = msg.message_id
-        return
-
     if not update.message.photo:
-        await update.message.reply_text("📸 Rasm yuboring yoki /start bosing!")
+        msg = await update.message.reply_text(
+            "📸 Rasm yuboring yoki /start bosing!"
+        )
+        context.user_data["last_bot_msg"] = msg.message_id
         return
 
-    api_key = users[user.id].get("api_key")
-    if not api_key:
-        await update.message.reply_text("⚠️ Avval /start bosib *API Key* kiriting!", parse_mode="Markdown")
+    mode = context.user_data.get("mode")
+    if not mode:
+        msg = await update.message.reply_text(
+            "👆 Avval xizmatni tanlang!",
+            reply_markup=main_keyboard()
+        )
+        context.user_data["last_bot_msg"] = msg.message_id
         return
-
-    mode = context.user_data.get("mode", "upscale")
-    ratio = context.user_data.get("ratio", "16:9")
 
     await delete_prev(context, chat_id)
-    processing_msg = await context.bot.send_message(
-        chat_id,
-        "⏳ *Qayta ishlanmoqda, kuting...*",
-        parse_mode="Markdown"
+    proc_msg = await context.bot.send_message(
+        chat_id, "⏳ *Qayta ishlanmoqda...*", parse_mode="Markdown"
     )
-    context.user_data["last_bot_msg"] = processing_msg.message_id
+    context.user_data["last_bot_msg"] = proc_msg.message_id
 
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
-    img_bytes = await file.download_as_bytearray()
+    img_bytes = bytes(await file.download_as_bytearray())
 
     try:
         if mode == "generate":
+            ratio = context.user_data.get("ratio", "16:9")
+            img_b64 = "data:image/png;base64," + base64.b64encode(img_bytes).decode()
+
             response = requests.post(
-                "https://api.stability.ai/v2beta/stable-image/control/style",
-                headers={"authorization": f"Bearer {api_key}", "accept": "image/*"},
-                files={"image": ("image.png", bytes(img_bytes), "image/png")},
-                data={"output_format": "png", "aspect_ratio": ratio, "fidelity": 0.9}
+                "https://api.replicate.com/v1/models/stability-ai/stable-diffusion/versions/ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4/predictions",
+                headers={
+                    "Authorization": f"Token {REPLICATE_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "input": {
+                        "image": img_b64,
+                        "prompt": "high quality, cinematic, professional, sharp, detailed",
+                        "strength": 0.6,
+                        "guidance_scale": 7.5,
+                        "num_inference_steps": 30
+                    }
+                }
             )
+
+            if response.status_code in [200, 201]:
+                prediction = response.json()
+                prediction_id = prediction.get("id")
+                import time
+                result_url = None
+                for _ in range(60):
+                    time.sleep(2)
+                    check = requests.get(
+                        f"https://api.replicate.com/v1/predictions/{prediction_id}",
+                        headers={"Authorization": f"Token {REPLICATE_KEY}"}
+                    )
+                    check_data = check.json()
+                    if check_data.get("status") == "succeeded":
+                        output = check_data.get("output")
+                        result_url = output[0] if isinstance(output, list) else output
+                        break
+                    elif check_data.get("status") == "failed":
+                        break
+
+                if result_url:
+                    img_response = requests.get(result_url)
+                    photo_io = compress_image(img_response.content)
+                    users[user.id]["generate"] += 1
+                    users[user.id]["count"] += 1
+                    try:
+                        await proc_msg.delete()
+                    except:
+                        pass
+                    await update.message.reply_photo(
+                        photo=photo_io,
+                        caption="✅ *AI Generate tayyor!* 🎨",
+                        parse_mode="Markdown",
+                        reply_markup=result_keyboard()
+                    )
+                else:
+                    try:
+                        await proc_msg.delete()
+                    except:
+                        pass
+                    msg = await context.bot.send_message(
+                        chat_id, "❌ AI Generate muvaffaqiyatsiz. Qayta urinib ko'ring!"
+                    )
+                    context.user_data["last_bot_msg"] = msg.message_id
+            else:
+                try:
+                    await proc_msg.delete()
+                except:
+                    pass
+                msg = await context.bot.send_message(
+                    chat_id, f"❌ Xatolik: `{response.status_code}`", parse_mode="Markdown"
+                )
+                context.user_data["last_bot_msg"] = msg.message_id
+
         else:
             response = requests.post(
                 "https://api.stability.ai/v2beta/stable-image/upscale/fast",
-                headers={"authorization": f"Bearer {api_key}", "accept": "image/*"},
-                files={"image": ("image.png", bytes(img_bytes), "image/png")},
+                headers={
+                    "authorization": f"Bearer {STABILITY_KEY}",
+                    "accept": "image/*"
+                },
+                files={"image": ("image.png", img_bytes, "image/png")},
                 data={"output_format": "png"}
             )
 
-        try:
-            await processing_msg.delete()
-        except:
-            pass
+            try:
+                await proc_msg.delete()
+            except:
+                pass
 
-        if response.status_code == 200:
-            if mode == "generate":
-                users[user.id]["generate"] = users[user.id].get("generate", 0) + 1
-                caption = "✅ *AI Generate tayyor!* _(3 kredit sarflandi)_"
+            if response.status_code == 200:
+                photo_io = compress_image(response.content)
+                users[user.id]["upscale"] += 1
+                users[user.id]["count"] += 1
+                await update.message.reply_photo(
+                    photo=photo_io,
+                    caption="✅ *Upscale tayyor!* 📸",
+                    parse_mode="Markdown",
+                    reply_markup=result_keyboard()
+                )
             else:
-                users[user.id]["upscale"] = users[user.id].get("upscale", 0) + 1
-                caption = "✅ *Upscale tayyor!* _(1 kredit sarflandi)_"
-            users[user.id]["count"] = users[user.id].get("count", 0) + 1
-
-            photo_io = io.BytesIO(response.content)
-            photo_io.name = "result.png"
-
-            keyboard = [
-                [InlineKeyboardButton("📸 Upscale", callback_data="upscale"),
-                 InlineKeyboardButton("🎨 AI Generate", callback_data="generate")],
-                [InlineKeyboardButton("🔙 Menyu", callback_data="back")]
-            ]
-            await update.message.reply_photo(
-                photo=photo_io,
-                caption=caption,
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        elif response.status_code == 202:
-            msg = await context.bot.send_message(chat_id, "⏳ Server band, 1 daqiqa kutib qayta yuboring!")
-            context.user_data["last_bot_msg"] = msg.message_id
-        else:
-            msg = await context.bot.send_message(
-                chat_id,
-                f"❌ *Xatolik:* `{response.status_code}`\n"
-                f"API Key noto'g'ri yoki kredit tugagan!\n\n"
-                f"_/start → 📊 Statistika_",
-                parse_mode="Markdown"
-            )
-            context.user_data["last_bot_msg"] = msg.message_id
+                msg = await context.bot.send_message(
+                    chat_id,
+                    f"❌ Upscale xatolik: `{response.status_code}`\n"
+                    f"`{response.text[:100]}`",
+                    parse_mode="Markdown"
+                )
+                context.user_data["last_bot_msg"] = msg.message_id
 
     except Exception as e:
         try:
-            await processing_msg.delete()
+            await proc_msg.delete()
         except:
             pass
-        msg = await context.bot.send_message(chat_id, f"❌ Xatolik yuz berdi: {str(e)[:100]}")
+        msg = await context.bot.send_message(
+            chat_id, f"❌ Xatolik: `{str(e)[:200]}`", parse_mode="Markdown"
+        )
         context.user_data["last_bot_msg"] = msg.message_id
 
 app = Application.builder().token(BOT_TOKEN).build()
